@@ -3550,7 +3550,12 @@ parse_line (const char *line,
   bool backslash = false;
   char in, out;
 
-  char parm[OPTION_PARM_SIZE];
+# ifdef ENABLE_PKCS11
+#   define PARM_SIZE USER_PASS_LEN
+# else
+#   define PARM_SIZE OPTION_PARM_SIZE
+# endif
+  char parm[PARM_SIZE];
   unsigned int parm_len = 0;
 
   msglevel &= ~M_OPTERR;
