@@ -314,6 +314,7 @@ find_certificate_in_store(const char *cert_prop, HCERTSTORE cert_store)
 {
   /* Find, and use, the desired certificate from the store. The
     * 'cert_prop' certificate search string can look like this:
+    * ISSR:<certificate substring to match>
     * SUBJ:<certificate substring to match>
     * THUMB:<certificate thumbprint hex value>, e.g.
     *     THUMB:f6 49 24 41 01 b4 fb 44 0c ce f4 36 ae d0 c4 c9 df 7a b6 28
@@ -327,6 +328,15 @@ find_certificate_in_store(const char *cert_prop, HCERTSTORE cert_store)
       rv = CertFindCertificateInStore(cert_store,
                                       X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
                                       0, CERT_FIND_SUBJECT_STR_A, cert_prop,
+                                      NULL);
+    }
+  else if (!strncmp(cert_prop, "ISSR:", strlen("ISSR:")))
+    {
+      /* skip the tag */
+      cert_prop += strlen("ISSR:");
+      rv = CertFindCertificateInStore(cert_store,
+                                      X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                                      0, CERT_FIND_ISSUER_STR_A, cert_prop,
                                       NULL);
     }
   else if (!strncmp(cert_prop, "THUMB:", strlen("THUMB:")))
