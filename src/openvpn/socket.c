@@ -3095,7 +3095,7 @@ socket_recv_queue (struct link_socket *sock, int maxsize)
 
       if (!status) /* operation completed immediately? */
 	{
-	  int addrlen = af_addr_size(sock->info.lsa->local.addr.sa.sa_family);
+	  int addrlen = af_addr_size(sock->info.lsa->bind_local->ai_family);
 	  if (sock->reads.addr_defined && sock->reads.addrlen != addrlen)
 	    bad_address_length (sock->reads.addrlen, addrlen);
 	  sock->reads.iostate = IOSTATE_IMMEDIATE_RETURN;

@@ -55,6 +55,12 @@
 #define sleep(x) Sleep((x)*1000)
 #define random rand
 #define srandom srand
+#ifndef IPV6_V6ONLY
+#define IPV6_V6ONLY 27
+#endif
+#ifndef ETIMEDOUT
+#define ETIMEDOUT WSAETIMEDOUT
+#endif
 #endif
 
 #if defined(__APPLE__)
@@ -693,7 +699,7 @@ socket_defined (const socket_descriptor_t sd)
 /*
  * Is non-blocking connect() supported?
  */
-#if defined(HAVE_GETSOCKOPT) && defined(SOL_SOCKET) && defined(SO_ERROR) && defined(EINPROGRESS) && defined(ETIMEDOUT)
+#if defined(HAVE_GETSOCKOPT) && defined(SOL_SOCKET) && defined(SO_ERROR) && (!defined(WIN32) && defined(EINPROGRESS)) || (defined(WIN32) && defined(WSAEWOULDBLOCK)) && defined(ETIMEDOUT)
 #define CONNECT_NONBLOCK
 #endif
 
