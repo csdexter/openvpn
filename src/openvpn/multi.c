@@ -39,6 +39,7 @@
 #include "gremlin.h"
 #include "mstats.h"
 #include "ssl_verify.h"
+#include <inttypes.h>
 
 #include "memdbg.h"
 
@@ -373,6 +374,8 @@ multi_init (struct multi_context *m, struct context *t, bool tcp_mode, int threa
    */
   m->max_clients = t->options.max_clients;
 
+  m->instances = calloc(m->max_clients, sizeof(struct multi_instance*));
+
   /*
    * Initialize multi-socket TCP I/O wait object
    */
@@ -400,7 +403,7 @@ multi_instance_string (const struct multi_instance *mi, bool null, struct gc_are
 {
   if (mi)
     {
-      struct buffer out = alloc_buf_gc (256, gc);
+      struct buffer out = alloc_buf_gc (MULTI_PREFIX_MAX_LENGTH, gc);
       const char *cn = tls_common_name (mi->context.c2.tls_multi, true);
 
       if (cn)
@@ -417,21 +420,27 @@ multi_instance_string (const struct multi_instance *mi, bool null, struct gc_are
 void
 generate_prefix (struct multi_instance *mi)
 {
-  mi->msg_prefix = multi_instance_string (mi, true, &mi->gc);
+  struct gc_arena gc = gc_new();
+  const char *prefix = multi_instance_string (mi, true, &gc);
+  if (prefix)
+    strncpynt(mi->msg_prefix, prefix, sizeof(mi->msg_prefix));
+  else
+    mi->msg_prefix[0] = '\0';
   set_prefix (mi);
+  gc_free(&gc);
 }
 
 void
 ungenerate_prefix (struct multi_instance *mi)
 {
-  mi->msg_prefix = NULL;
+  mi->msg_prefix[0] = '\0';
   set_prefix (mi);
 }
 
 static const char *
 mi_prefix (const struct multi_instance *mi)
 {
-  if (mi && mi->msg_prefix)
+  if (mi && mi->msg_prefix[0])
     return mi->msg_prefix;
   else
     return "UNDEF_I";
@@ -553,6 +562,8 @@ multi_close_instance (struct multi_context *m,
 	}
 #endif
 
+      m->instances[mi->context.c2.tls_multi->peer_id] = NULL;
+
       schedule_remove_entry (m->schedule, (struct schedule_entry *) mi);
 
       ifconfig_pool_release (m->ifconfig_pool, mi->vaddr_handle, false);
@@ -628,6 +639,8 @@ multi_uninit (struct multi_context *m)
 	  hash_free (m->cid_hash);
 #endif
 	  m->hash = NULL;
+
+	  free(m->instances);
 
 	  schedule_free (m->schedule);
 	  mbuf_free (m->mbuf);
@@ -808,8 +821,8 @@ multi_print_status (struct multi_context *m, struct status_output *so, const int
 	   */
 	  status_printf (so, "TITLE%c%s", sep, title_string);
 	  status_printf (so, "TIME%c%s%c%u", sep, time_string (now, 0, false, &gc_top), sep, (unsigned int)now);
-	  status_printf (so, "HEADER%cCLIENT_LIST%cCommon Name%cReal Address%cVirtual Address%cVirtual IPv6 Address%cBytes Received%cBytes Sent%cConnected Since%cConnected Since (time_t)%cUsername%cClient ID",
-			 sep, sep, sep, sep, sep, sep, sep, sep, sep, sep, sep);
+	  status_printf (so, "HEADER%cCLIENT_LIST%cCommon Name%cReal Address%cVirtual Address%cVirtual IPv6 Address%cBytes Received%cBytes Sent%cConnected Since%cConnected Since (time_t)%cUsername%cClient ID%cPeer ID",
+			 sep, sep, sep, sep, sep, sep, sep, sep, sep, sep, sep, sep);
 	  hash_iterator_init (m->hash, &hi);
 	  while ((he = hash_iterator_next (&hi)))
 	    {
@@ -820,10 +833,11 @@ multi_print_status (struct multi_context *m, struct status_output *so, const int
 		{
 		  status_printf (so, "CLIENT_LIST%c%s%c%s%c%s%c%s%c" counter_format "%c" counter_format "%c%s%c%u%c%s%c"
 #ifdef MANAGEMENT_DEF_AUTH
-				 "%lu",
+				 "%lu"
 #else
-				 "",
+				 ""
 #endif
+				 "%c%"PRIu32,
 				 sep, tls_common_name (mi->context.c2.tls_multi, false),
 				 sep, mroute_addr_print (&mi->real, &gc),
 				 sep, print_in_addr_t (mi->reporting_addr, IA_EMPTY_IF_UNDEF, &gc),
@@ -834,10 +848,11 @@ multi_print_status (struct multi_context *m, struct status_output *so, const int
 				 sep, (unsigned int)mi->created,
 				 sep, tls_username (mi->context.c2.tls_multi, false),
 #ifdef MANAGEMENT_DEF_AUTH
-				 sep, mi->context.c2.mda_context.cid);
+				 sep, mi->context.c2.mda_context.cid,
 #else
-				 sep);
+				 sep,
 #endif
+				 sep, mi->context.c2.tls_multi ? mi->context.c2.tls_multi->peer_id : UINT32_MAX);
 		}
 	      gc_free (&gc);
 	    }
@@ -1459,10 +1474,6 @@ multi_client_connect_post (struct multi_context *m,
 			     option_types_found,
 			     mi->context.c2.es);
 
-      if (!platform_unlink (dc_file))
-	msg (D_MULTI_ERRORS, "MULTI: problem deleting temporary file: %s",
-	     dc_file);
-
       /*
        * If the --client-connect script generates a config file
        * with an --ifconfig-push directive, it will override any
@@ -1705,6 +1716,11 @@ multi_connection_established (struct multi_context *m, struct multi_instance *mi
 	      multi_client_connect_post (m, mi, dc_file, option_permissions_mask, &option_types_found);
 	      ++cc_succeeded_count;
 	    }
+
+	  if (!platform_unlink (dc_file))
+	    msg (D_MULTI_ERRORS, "MULTI: problem deleting temporary file: %s",
+		 dc_file);
+
         script_depr_failed:
 	  argv_reset (&argv);
 	}
@@ -1758,6 +1774,11 @@ multi_connection_established (struct multi_context *m, struct multi_instance *mi
 	    }
 	  else
 	    cc_succeeded = false;
+
+	  if (!platform_unlink (dc_file))
+	    msg (D_MULTI_ERRORS, "MULTI: problem deleting temporary file: %s",
+		 dc_file);
+
         script_failed:
 	  argv_reset (&argv);
 	}
@@ -2094,6 +2115,76 @@ multi_process_post (struct multi_context *m, struct multi_instance *mi, const un
   return ret;
 }
 
+void multi_process_float (struct multi_context* m, struct multi_instance* mi)
+{
+  struct mroute_addr real;
+  struct hash *hash = m->hash;
+  struct gc_arena gc = gc_new ();
+
+  if (!mroute_extract_openvpn_sockaddr (&real, &m->top.c2.from.dest, true))
+    goto done;
+
+  const uint32_t hv = hash_value (hash, &real);
+  struct hash_bucket *bucket = hash_bucket (hash, hv);
+
+  /* make sure that we don't float to an address taken by another client */
+  struct hash_element *he = hash_lookup_fast (hash, bucket, &real, hv);
+  if (he)
+    {
+      struct multi_instance *ex_mi = (struct multi_instance *) he->value;
+
+      struct tls_multi *m1 = mi->context.c2.tls_multi;
+      struct tls_multi *m2 = ex_mi->context.c2.tls_multi;
+
+      /* do not float if target address is taken by client with another cert */
+      if (!cert_hash_compare(m1->locked_cert_hash_set, m2->locked_cert_hash_set))
+	{
+	  msg (D_MULTI_MEDIUM, "Disallow float to an address taken by another client %s",
+	       multi_instance_string (ex_mi, false, &gc));
+
+	  mi->context.c2.buf.len = 0;
+
+	  goto done;
+	}
+
+      msg (D_MULTI_MEDIUM, "closing instance %s", multi_instance_string (ex_mi, false, &gc));
+      multi_close_instance(m, ex_mi, false);
+    }
+
+    msg (D_MULTI_MEDIUM, "peer %" PRIu32 " (%s) floated from %s to %s",
+	mi->context.c2.tls_multi->peer_id,
+	tls_common_name (mi->context.c2.tls_multi, false),
+	mroute_addr_print (&mi->real, &gc),
+	print_link_socket_actual (&m->top.c2.from, &gc));
+
+    ASSERT (hash_remove(m->hash, &mi->real));
+    ASSERT (hash_remove(m->iter, &mi->real));
+
+    /* change external network address of the remote peer */
+    mi->real = real;
+    generate_prefix (mi);
+
+    mi->context.c2.from = m->top.c2.from;
+    mi->context.c2.to_link_addr = &mi->context.c2.from;
+
+    /* inherit parent link_socket and link_socket_info */
+    mi->context.c2.link_socket = m->top.c2.link_socket;
+    mi->context.c2.link_socket_info->lsa->actual = m->top.c2.from;
+
+    tls_update_remote_addr (mi->context.c2.tls_multi, &mi->context.c2.from);
+
+    ASSERT (hash_add (m->hash, &mi->real, mi, false));
+    ASSERT (hash_add (m->iter, &mi->real, mi, false));
+
+#ifdef MANAGEMENT_DEF_AUTH
+    hash_remove (m->cid_hash, &mi->context.c2.mda_context.cid);
+    hash_add (m->cid_hash, &mi->context.c2.mda_context.cid, mi, false);
+#endif
+
+done:
+    gc_free (&gc);
+}
+
 /*
  * Process packets in the TCP/UDP socket -> TUN/TAP interface direction,
  * i.e. client -> server direction.
@@ -2108,6 +2199,7 @@ multi_process_incoming_link (struct multi_context *m, struct multi_instance *ins
   unsigned int mroute_flags;
   struct multi_instance *mi;
   bool ret = true;
+  bool floated = false;
 
   if (m->pending)
     return true;
@@ -2117,7 +2209,7 @@ multi_process_incoming_link (struct multi_context *m, struct multi_instance *ins
 #ifdef MULTI_DEBUG_EVENT_LOOP
       printf ("TCP/UDP -> TUN [%d]\n", BLEN (&m->top.c2.buf));
 #endif
-      multi_set_pending (m, multi_get_create_instance_udp (m));
+      multi_set_pending (m, multi_get_create_instance_udp (m, &floated));
     }
   else
     multi_set_pending (m, instance);
@@ -2135,13 +2227,30 @@ multi_process_incoming_link (struct multi_context *m, struct multi_instance *ins
 	  c->c2.buf = m->top.c2.buf;
 
 	  /* transfer from-addr from top-level context buffer to instance */
-	  c->c2.from = m->top.c2.from;
+	  if (!floated)
+	    c->c2.from = m->top.c2.from;
 	}
 
       if (BLEN (&c->c2.buf) > 0)
 	{
+	  struct link_socket_info *lsi;
+	  const uint8_t *orig_buf;
+
 	  /* decrypt in instance context */
-	  process_incoming_link (c);
+
+	  perf_push (PERF_PROC_IN_LINK);
+	  lsi = get_link_socket_info (c);
+	  orig_buf = c->c2.buf.data;
+	  if (process_incoming_link_part1(c, lsi, floated))
+	    {
+	      if (floated)
+		{
+		  multi_process_float (m, m->pending);
+		}
+
+	      process_incoming_link_part2(c, lsi, orig_buf);
+	    }
+	  perf_pop ();
 
 	  if (TUNNEL_TYPE (m->top.c1.tuntap) == DEV_TYPE_TUN)
 	    {

@@ -43,7 +43,7 @@
 
 #include "syshead.h"
 
-#if defined(ENABLE_CRYPTO) && defined(ENABLE_SSL)
+#if defined(ENABLE_CRYPTO)
 
 #include "error.h"
 #include "common.h"
@@ -242,6 +242,7 @@ static const tls_cipher_name_pair tls_cipher_name_translation_table[] = {
     {"EDH", "EDH"},
     {"EXP", "EXP"},
     {"RSA", "RSA"},
+    {"kRSA", "kRSA"},
     {"SRP", "SRP"},
 #endif
     {NULL, NULL}
@@ -267,7 +268,7 @@ tls_get_cipher_name_pair (const char * cipher_name, size_t len) {
  * Max number of bytes we will add
  * for data structures common to both
  * data and control channel packets.
- * (opcode only). 
+ * (opcode only).
  */
 void
 tls_adjust_frame_parameters(struct frame *frame)
@@ -454,7 +455,7 @@ ssl_put_auth_challenge (const char *cr_str)
  * return tls_version_max().
  */
 int
-tls_version_min_parse(const char *vstr, const char *extra)
+tls_version_parse(const char *vstr, const char *extra)
 {
   const int max_version = tls_version_max();
   if (!strcmp(vstr, "1.0") && TLS_VER_1_0 <= max_version)
@@ -483,7 +484,10 @@ init_ssl (const struct options *options, struct tls_root_ctx *new_ctx)
   if (options->tls_server)
     {
       tls_ctx_server_new(new_ctx);
-      tls_ctx_load_dh_params(new_ctx, options->dh_file, options->dh_file_inline);
+
+      if (options->dh_file)
+	tls_ctx_load_dh_params(new_ctx, options->dh_file,
+			       options->dh_file_inline);
     }
   else				/* if client */
     {
@@ -630,6 +634,8 @@ packet_opcode_name (int op)
       return "P_ACK_V1";
     case P_DATA_V1:
       return "P_DATA_V1";
+    case P_DATA_V2:
+      return "P_DATA_V2";
     default:
       return "P_???";
     }
@@ -1058,6 +1064,9 @@ tls_multi_init (struct tls_options *tls_options)
   ret->key_scan[0] = &ret->session[TM_ACTIVE].key[KS_PRIMARY];
   ret->key_scan[1] = &ret->session[TM_ACTIVE].key[KS_LAME_DUCK];
   ret->key_scan[2] = &ret->session[TM_LAME_DUCK].key[KS_LAME_DUCK];
+
+  /* By default not use P_DATA_V2 */
+  ret->use_peer_id = false;
 
   return ret;
 }
@@ -1832,6 +1841,9 @@ push_peer_info(struct buffer *buf, struct tls_session *session)
       buf_printf (&out, "IV_PLAT=win\n");
 #endif
 
+      /* support for P_DATA_V2 */
+      buf_printf(&out, "IV_PROTO=2\n");
+
       /* push compression status */
 #ifdef USE_COMP
       comp_generate_peer_info_string(&session->opt->comp_options, &out);
@@ -2034,7 +2046,11 @@ key_method_2_read (struct buffer *buf, struct tls_multi *multi, struct tls_sessi
   ASSERT (session->opt->key_method == 2);
 
   /* discard leading uint32 */
-  ASSERT (buf_advance (buf, 4));
+  if (!buf_advance (buf, 4)) {
+    msg (D_TLS_ERRORS, "TLS ERROR: Plaintext buffer too short (%d bytes).",
+	buf->len);
+    goto error;
+  }
 
   /* get key method */
   key_method_flags = buf_read_u8 (buf);
@@ -2771,7 +2787,8 @@ bool
 tls_pre_decrypt (struct tls_multi *multi,
 		 const struct link_socket_actual *from,
 		 struct buffer *buf,
-		 struct crypto_options *opt)
+		 struct crypto_options *opt,
+		 bool floated)
 {
   struct gc_arena gc = gc_new ();
   bool ret = false;
@@ -2789,8 +2806,9 @@ tls_pre_decrypt (struct tls_multi *multi,
 	key_id = c & P_KEY_ID_MASK;
       }
 
-      if (op == P_DATA_V1)
-	{			/* data channel packet */
+      if ((op == P_DATA_V1) || (op == P_DATA_V2))
+	{
+	  /* data channel packet */
 	  for (i = 0; i < KEY_SCAN_SIZE; ++i)
 	    {
 	      struct key_state *ks = multi->key_scan[i];
@@ -2814,7 +2832,7 @@ tls_pre_decrypt (struct tls_multi *multi,
 #ifdef ENABLE_DEF_AUTH
 		  && !ks->auth_deferred
 #endif
-		  && link_socket_actual_match (from, &ks->remote_addr))
+		  && (floated || link_socket_actual_match (from, &ks->remote_addr)))
 		{
 		  /* return appropriate data channel decrypt key in opt */
 		  opt->key_ctx_bi = &ks->key;
@@ -2822,7 +2840,19 @@ tls_pre_decrypt (struct tls_multi *multi,
 		  opt->pid_persist = NULL;
 		  opt->flags &= multi->opt.crypto_flags_and;
 		  opt->flags |= multi->opt.crypto_flags_or;
+
 		  ASSERT (buf_advance (buf, 1));
+		  if (op == P_DATA_V2)
+		    {
+		      if (buf->len < 4)
+			{
+			  msg (D_TLS_ERRORS, "Protocol error: received P_DATA_V2 from %s but length is < 4",
+				print_link_socket_actual (from, &gc));
+			  goto error;
+			}
+		      ASSERT (buf_advance (buf, 3));
+		    }
+
 		  ++ks->n_packets;
 		  ks->n_bytes += buf->len;
 		  dmsg (D_TLS_KEYSELECT,
@@ -3387,14 +3417,24 @@ tls_post_encrypt (struct tls_multi *multi, struct buffer *buf)
 {
   struct key_state *ks;
   uint8_t *op;
+  uint32_t peer;
 
   ks = multi->save_ks;
   multi->save_ks = NULL;
   if (buf->len > 0)
     {
       ASSERT (ks);
-      ASSERT (op = buf_prepend (buf, 1));
-      *op = (P_DATA_V1 << P_OPCODE_SHIFT) | ks->key_id;
+
+      if (!multi->opt.server && multi->use_peer_id)
+	{
+	  peer = htonl(((P_DATA_V2 << P_OPCODE_SHIFT) | ks->key_id) << 24 | (multi->peer_id & 0xFFFFFF));
+	  ASSERT (buf_write_prepend (buf, &peer, 4));
+	}
+      else
+	{
+	  ASSERT (op = buf_prepend (buf, 1));
+	  *op = (P_DATA_V1 << P_OPCODE_SHIFT) | ks->key_id;
+	}
       ++ks->n_packets;
       ks->n_bytes += buf->len;
     }
@@ -3467,6 +3507,34 @@ tls_rec_payload (struct tls_multi *multi,
   return ret;
 }
 
+void
+tls_update_remote_addr (struct tls_multi *multi, const struct link_socket_actual *addr)
+{
+  struct gc_arena gc = gc_new ();
+  int i, j;
+
+  for (i = 0; i < TM_SIZE; ++i)
+    {
+      struct tls_session *session = &multi->session[i];
+
+      for (j = 0; j < KS_SIZE; ++j)
+	{
+	  struct key_state *ks = &session->key[j];
+
+	  if (!link_socket_actual_defined(&ks->remote_addr) ||
+		link_socket_actual_match (addr, &ks->remote_addr))
+	    continue;
+
+	  dmsg (D_TLS_KEYSELECT, "TLS: tls_update_remote_addr from IP=%s to IP=%s",
+	       print_link_socket_actual (&ks->remote_addr, &gc),
+	       print_link_socket_actual (addr, &gc));
+
+	  ks->remote_addr = *addr;
+	}
+    }
+  gc_free (&gc);
+}
+
 /*
  * Dump a human-readable rendition of an openvpn packet
  * into a garbage collectable string which is returned.
@@ -3501,7 +3569,7 @@ protocol_dump (struct buffer *buffer, unsigned int flags, struct gc_arena *gc)
   key_id = c & P_KEY_ID_MASK;
   buf_printf (&out, "%s kid=%d", packet_opcode_name (op), key_id);
 
-  if (op == P_DATA_V1)
+  if ((op == P_DATA_V1) || (op == P_DATA_V2))
     goto print_data;
 
   /*
@@ -3567,4 +3635,4 @@ done:
 
 #else
 static void dummy(void) {}
-#endif /* ENABLE_CRYPTO && ENABLE_SSL*/
+#endif /* ENABLE_CRYPTO */

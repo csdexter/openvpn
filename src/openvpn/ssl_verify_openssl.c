@@ -35,7 +35,7 @@
 
 #include "syshead.h"
 
-#if defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_OPENSSL)
+#if defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_OPENSSL)
 
 #include "ssl_verify_openssl.h"
 
@@ -101,9 +101,7 @@ static
 bool extract_x509_extension(X509 *cert, char *fieldname, char *out, int size)
 {
   bool retval = false;
-  X509_EXTENSION *pExt;
   char *buf = 0;
-  int length = 0;
   GENERAL_NAMES *extensions;
   int nid = OBJ_txt2nid(fieldname);
 
@@ -140,8 +138,8 @@ bool extract_x509_extension(X509 *cert, char *fieldname, char *out, int size)
                   }
                 break;
               default:
-                msg (D_TLS_ERRORS, "ASN1 ERROR: can not handle field type %i",
-                     name->type);
+                msg (D_TLS_DEBUG, "%s: ignoring general name field type %i",
+                    __func__, name->type);
                 break;
             }
           }
@@ -171,8 +169,8 @@ extract_x509_field_ssl (X509_NAME *x509, const char *field_name, char *out,
   int tmp = -1;
   X509_NAME_ENTRY *x509ne = 0;
   ASN1_STRING *asn1 = 0;
-  unsigned char *buf = (unsigned char *)1; /* bug in OpenSSL 0.9.6b ASN1_STRING_to_UTF8 requires this workaround */
-  int nid = OBJ_txt2nid((char *)field_name);
+  unsigned char *buf = NULL;
+  int nid = OBJ_txt2nid(field_name);
 
   ASSERT (size > 0);
   *out = '\0';
@@ -627,4 +625,4 @@ end:
   return retval;
 }
 
-#endif /* defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_OPENSSL) */
+#endif /* defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_OPENSSL) */

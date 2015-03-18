@@ -195,10 +195,8 @@ struct options
   bool show_ciphers;
   bool show_digests;
   bool show_engines;
-#ifdef ENABLE_SSL
   bool show_tls_ciphers;
   bool show_curves;
-#endif
   bool genkey;
 #endif
 
@@ -500,7 +498,6 @@ struct options
   bool use_prediction_resistance;
 #endif
 
-#ifdef ENABLE_SSL
   /* TLS (control channel) parms */
   bool tls_server;
   bool tls_client;
@@ -586,7 +583,6 @@ struct options
 
   bool tls_exit;
 
-#endif /* ENABLE_SSL */
 #endif /* ENABLE_CRYPTO */
 
 #ifdef ENABLE_X509_TRACK
@@ -602,6 +598,9 @@ struct options
   bool show_net_up;
   int route_method;
 #endif
+
+  bool use_peer_id;
+  uint32_t peer_id;
 };
 
 #define streq(x, y) (!strcmp((x), (y)))
@@ -637,6 +636,7 @@ struct options
 #define OPT_P_SOCKBUF         (1<<25)
 #define OPT_P_SOCKFLAGS       (1<<26)
 #define OPT_P_CONNECTION      (1<<27)
+#define OPT_P_PEER_ID         (1<<28)
 
 #define OPT_P_DEFAULT   (~(OPT_P_INSTANCE|OPT_P_PULL_MODE))
 

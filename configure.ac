@@ -73,16 +73,9 @@ AC_ARG_ENABLE(
 
 AC_ARG_ENABLE(
 	[ofb-cfb],
-	[AS_HELP_STRING([--enable-ofb-cfb], [enable support for OFB and CFB cipher modes @<:@default=yes@:>@])],
+	[AS_HELP_STRING([--disable-ofb-cfb], [disable support for OFB and CFB cipher modes @<:@default=yes@:>@])],
 	,
 	[enable_crypto_ofb_cfb="yes"]
-)
-
-AC_ARG_ENABLE(
-	[ssl],
-	[AS_HELP_STRING([--disable-ssl], [disable SSL support for TLS-based key exchange @<:@default=yes@:>@])],
-	,
-	[enable_ssl="yes"]
 )
 
 AC_ARG_ENABLE(
@@ -157,14 +150,14 @@ AC_ARG_ENABLE(
 
 AC_ARG_ENABLE(
 	[small],
-	[AS_HELP_STRING([--enable-small], [enable smaller executable size (disable OCC, usage message, and verb 4 parm list) @<:@default=yes@:>@])],
+	[AS_HELP_STRING([--enable-small], [enable smaller executable size (disable OCC, usage message, and verb 4 parm list) @<:@default=no@:>@])],
 	,
 	[enable_small="no"]
 )
 
 AC_ARG_ENABLE(
 	[password-save],
-	[AS_HELP_STRING([--enable-password-save], [allow --askpass and --auth-user-pass passwords to be read from a file @<:@default=yes@:>@])],
+	[AS_HELP_STRING([--enable-password-save], [allow --askpass and --auth-user-pass passwords to be read from a file @<:@default=no@:>@])],
 	,
 	[enable_password_save="no"]
 )
@@ -1081,19 +1074,11 @@ case "${with_crypto_library}" in
 		;;
 esac
 
-if test "${enable_ssl}" = "yes"; then
-	test "${enable_crypto}" != "yes" && AC_MSG_ERROR([crypto must be enabled for ssl])
-	test "${have_crypto_ssl}" != "yes" && AC_MSG_ERROR([${with_ssl_library} ssl is required but missing])
-	OPTIONAL_CRYPTO_CFLAGS="${OPTIONAL_CRYPTO_CFLAGS} ${CRYPTO_SSL_CFLAGS}"
-	OPTIONAL_CRYPTO_LIBS="${OPTIONAL_CRYPTO_LIBS} ${CRYPTO_SSL_LIBS}"
-	AC_DEFINE([ENABLE_SSL], [1], [Enable ssl library])
-fi
-
 if test "${enable_crypto}" = "yes"; then
 	test "${have_crypto_crypto}" != "yes" && AC_MSG_ERROR([${with_crypto_library} crypto is required but missing])
 	test "${enable_crypto_ofb_cfb}" = "yes" && AC_DEFINE([ENABLE_OFB_CFB_MODE], [1], [Enable OFB and CFB cipher modes])
-	OPTIONAL_CRYPTO_CFLAGS="${OPTIONAL_CRYPTO_CFLAGS} ${CRYPTO_CRYPTO_CFLAGS}"
-	OPTIONAL_CRYPTO_LIBS="${OPTIONAL_CRYPTO_LIBS} ${CRYPTO_CRYPTO_LIBS}"
+	OPTIONAL_CRYPTO_CFLAGS="${OPTIONAL_CRYPTO_CFLAGS} ${CRYPTO_CRYPTO_CFLAGS} ${CRYPTO_SSL_CFLAGS}"
+	OPTIONAL_CRYPTO_LIBS="${OPTIONAL_CRYPTO_LIBS} ${CRYPTO_CRYPTO_LIBS} ${CRYPTO_SSL_LIBS}"
 	AC_DEFINE([ENABLE_CRYPTO], [1], [Enable crypto library])
 fi
 
@@ -1136,10 +1121,17 @@ fi
 
 if test "${enable_pkcs11}" = "yes"; then
 	test "${have_pkcs11_helper}" != "yes" && AC_MSG_ERROR([PKCS11 enabled but libpkcs11-helper is missing])
-	test "${enable_ssl}" != "yes" && AC_MSG_ERROR([PKCS11 can be enabled only if SSL is enabled])
+	test "${enable_crypto}" != "yes" && AC_MSG_ERROR([PKCS11 can be enabled only if crypto is enabled])
 	OPTIONAL_PKCS11_HELPER_CFLAGS="${PKCS11_HELPER_CFLAGS}"
 	OPTIONAL_PKCS11_HELPER_LIBS="${PKCS11_HELPER_LIBS}"
 	AC_DEFINE([ENABLE_PKCS11], [1], [Enable PKCS11])
+	PKG_CHECK_MODULES(
+		[P11KIT],
+		[p11-kit-1],
+		[proxy_module="`$PKG_CONFIG --variable=proxy_module p11-kit-1`"
+		 AC_DEFINE_UNQUOTED([DEFAULT_PKCS11_MODULE], "${proxy_module}", [p11-kit proxy])],
+		[]
+	)
 fi
 
 if test "${enable_pedantic}" = "yes"; then

@@ -43,13 +43,6 @@
 #include "ps.h"
 #include "mstats.h"
 
-#ifdef ENABLE_CRYPTO
-#ifdef ENABLE_CRYPTO_OPENSSL
-#include <openssl/err.h>
-#endif
-#endif
-
-#include "memdbg.h"
 
 #if SYSLOG_CAPABILITY
 #ifndef LOG_OPENVPN
@@ -265,28 +258,6 @@ void x_msg_va (const unsigned int flags, const char *format, va_list arglist)
       SWAP;
     }
 
-#ifdef ENABLE_CRYPTO
-#ifdef ENABLE_CRYPTO_OPENSSL
-  if (flags & M_SSL)
-    {
-      int nerrs = 0;
-      size_t err;
-      while ((err = ERR_get_error ()))
-	{
-	  openvpn_snprintf (m2, ERR_BUF_SIZE, "%s: %s",
-			    m1, ERR_error_string (err, NULL));
-	  SWAP;
-	  ++nerrs;
-	}
-      if (!nerrs)
-	{
-	  openvpn_snprintf (m2, ERR_BUF_SIZE, "%s (OpenSSL)", m1);
-	  SWAP;
-	}
-    }
-#endif
-#endif
-
   if (flags & M_OPTERR)
     {
       openvpn_snprintf (m2, ERR_BUF_SIZE, "Options error: %s", m1);
@@ -348,7 +319,7 @@ void x_msg_va (const unsigned int flags, const char *format, va_list arglist)
 
 	      fprintf (fp, "%lu.%06lu %x %s%s%s%s",
 		       tv.tv_sec,
-		       tv.tv_usec,
+		       (unsigned long)tv.tv_usec,
 		       flags,
 		       prefix,
 		       prefix_sep,

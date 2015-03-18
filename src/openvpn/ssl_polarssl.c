@@ -36,7 +36,7 @@
 
 #include "syshead.h"
 
-#if defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_POLARSSL)
+#if defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_POLARSSL)
 
 #include "errlevel.h"
 #include "ssl_backend.h"
@@ -306,7 +306,7 @@ tls_ctx_load_priv_file (struct tls_root_ctx *ctx, const char *priv_key_file,
 	  (const unsigned char *) priv_key_inline, strlen(priv_key_inline),
 	  NULL, 0);
 
-      if (POLARSSL_ERR_PEM_PASSWORD_REQUIRED == status)
+      if (POLARSSL_ERR_PK_PASSWORD_REQUIRED == status)
 	{
 	  char passbuf[512] = {0};
 	  pem_password_callback(passbuf, 512, 0, NULL);
@@ -318,7 +318,7 @@ tls_ctx_load_priv_file (struct tls_root_ctx *ctx, const char *priv_key_file,
   else
     {
       status = pk_parse_keyfile(ctx->priv_key, priv_key_file, NULL);
-      if (POLARSSL_ERR_PEM_PASSWORD_REQUIRED == status)
+      if (POLARSSL_ERR_PK_PASSWORD_REQUIRED == status)
 	{
 	  char passbuf[512] = {0};
 	  pem_password_callback(passbuf, 512, 0, NULL);
@@ -328,7 +328,7 @@ tls_ctx_load_priv_file (struct tls_root_ctx *ctx, const char *priv_key_file,
   if (0 != status)
     {
 #ifdef ENABLE_MANAGEMENT
-      if (management && (POLARSSL_ERR_PEM_PASSWORD_MISMATCH == status))
+      if (management && (POLARSSL_ERR_PK_PASSWORD_MISMATCH == status))
 	  management_auth_failure (management, UP_TYPE_PRIVATE_KEY, NULL);
 #endif
       msg (M_WARN, "Cannot load private key file %s", priv_key_file);
@@ -693,6 +693,40 @@ tls_version_max(void)
 #endif
 }
 
+/**
+ * Convert an OpenVPN tls-version variable to PolarSSl format (i.e. a major and
+ * minor ssl version number).
+ *
+ * @param tls_ver	The tls-version variable to convert.
+ * @param major		Returns the TLS major version in polarssl format.
+ * 			Must be a valid pointer.
+ * @param minor		Returns the TLS minor version in polarssl format.
+ * 			Must be a valid pointer.
+ */
+static void tls_version_to_major_minor(int tls_ver, int *major, int *minor) {
+  ASSERT(major);
+  ASSERT(minor);
+
+  switch (tls_ver)
+  {
+    case TLS_VER_1_0:
+      *major = SSL_MAJOR_VERSION_3;
+      *minor = SSL_MINOR_VERSION_1;
+      break;
+    case TLS_VER_1_1:
+      *major = SSL_MAJOR_VERSION_3;
+      *minor = SSL_MINOR_VERSION_2;
+      break;
+    case TLS_VER_1_2:
+      *major = SSL_MAJOR_VERSION_3;
+      *minor = SSL_MINOR_VERSION_3;
+      break;
+    default:
+      msg(M_FATAL, "%s: invalid TLS version %d", __func__, tls_ver);
+      break;
+  }
+}
+
 void key_state_ssl_init(struct key_state_ssl *ks_ssl,
     const struct tls_root_ctx *ssl_ctx, bool is_server, struct tls_session *session)
 {
@@ -751,30 +785,32 @@ void key_state_ssl_init(struct key_state_ssl *ks_ssl,
 
       /* Initialize minimum TLS version */
       {
-	const int tls_version_min = (session->opt->ssl_flags >> SSLF_TLS_VERSION_SHIFT) & SSLF_TLS_VERSION_MASK;
-	int polar_major;
-	int polar_minor;
-	switch (tls_version_min)
+	const int tls_version_min =
+	    (session->opt->ssl_flags >> SSLF_TLS_VERSION_MIN_SHIFT) &
+	    SSLF_TLS_VERSION_MIN_MASK;
+
+	/* default to TLS 1.0 */
+	int major = SSL_MAJOR_VERSION_3;
+	int minor = SSL_MINOR_VERSION_1;
+
+	if (tls_version_min > TLS_VER_UNSPEC)
+	  tls_version_to_major_minor(tls_version_min, &major, &minor);
+
+	ssl_set_min_version(ks_ssl->ctx, major, minor);
+      }
+
+      /* Initialize maximum TLS version */
+      {
+	const int tls_version_max =
+	    (session->opt->ssl_flags >> SSLF_TLS_VERSION_MAX_SHIFT) &
+	    SSLF_TLS_VERSION_MAX_MASK;
+
+	if (tls_version_max > TLS_VER_UNSPEC)
 	  {
-	  case TLS_VER_1_0:
-	  default:
-	    polar_major = SSL_MAJOR_VERSION_3;
-	    polar_minor = SSL_MINOR_VERSION_1;
-	    break;
-#if defined(SSL_MAJOR_VERSION_3) && defined(SSL_MINOR_VERSION_2)
-	  case TLS_VER_1_1:
-	    polar_major = SSL_MAJOR_VERSION_3;
-	    polar_minor = SSL_MINOR_VERSION_2;
-	    break;
-#endif
-#if defined(SSL_MAJOR_VERSION_3) && defined(SSL_MINOR_VERSION_3)
-	  case TLS_VER_1_2:
-	    polar_major = SSL_MAJOR_VERSION_3;
-	    polar_minor = SSL_MINOR_VERSION_3;
-	    break;
-#endif
+	    int major, minor;
+	    tls_version_to_major_minor(tls_version_max, &major, &minor);
+	    ssl_set_max_version(ks_ssl->ctx, major, minor);
 	  }
-	ssl_set_min_version(ks_ssl->ctx, polar_major, polar_minor);
       }
 
       /* Initialise BIOs */
@@ -818,8 +854,8 @@ key_state_write_plaintext (struct key_state_ssl *ks, struct buffer *buf)
 
   if (0 == buf->len)
     {
-      return 0;
       perf_pop ();
+      return 0;
     }
 
   retval = ssl_write(ks->ctx, BPTR(buf), buf->len);
@@ -1143,4 +1179,4 @@ get_ssl_library_version(void)
     return polar_version;
 }
 
-#endif /* defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_POLARSSL) */
+#endif /* defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_POLARSSL) */

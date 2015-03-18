@@ -277,7 +277,7 @@ init_route (struct route_ipv4 *r,
   /* get_special_addr replaces specialaddr with a special ip addr
      like gw. getaddrinfo is called to convert a a addrinfo struct */
 
-  if(get_special_addr (rl, ro->network, &special.s_addr, &status))
+  if(get_special_addr (rl, ro->network, (in_addr_t *) &special.s_addr, &status))
     {
       special.s_addr = htonl(special.s_addr);
       ret = openvpn_getaddrinfo(0, inet_ntoa(special), NULL, 0, NULL,
@@ -1285,15 +1285,18 @@ add_route (struct route_ipv4 *r,
 
 #if defined(TARGET_LINUX)
 #ifdef ENABLE_IPROUTE
-  /* FIXME -- add on-link support for ENABLE_IPROUTE */
-  argv_printf (&argv, "%s route add %s/%d via %s",
+  argv_printf (&argv, "%s route add %s/%d",
   	      iproute_path,
 	      network,
-	      count_netmask_bits(netmask),
-	      gateway);
+              netmask_to_netbits2(r->netmask));
+
   if (r->flags & RT_METRIC_DEFINED)
     argv_printf_cat (&argv, "metric %d", r->metric);
 
+  if (is_on_link (is_local_route, flags, rgi))
+    argv_printf_cat (&argv, "dev %s", rgi->iface);
+  else
+    argv_printf_cat (&argv, "via %s", gateway);
 #else
   argv_printf (&argv, "%s add -net %s netmask %s",
 	       ROUTE_PATH,
@@ -1762,7 +1765,7 @@ delete_route (struct route_ipv4 *r,
   argv_printf (&argv, "%s route del %s/%d",
   	      iproute_path,
 	      network,
-	      count_netmask_bits(netmask));
+              netmask_to_netbits2(r->netmask));
 #else
   argv_printf (&argv, "%s del -net %s netmask %s",
 	       ROUTE_PATH,
@@ -2623,7 +2626,7 @@ get_default_gateway (struct route_gateway_info *rgi)
   gc_free (&gc);
 }
 
-#elif defined(TARGET_DARWIN) || \
+#elif defined(TARGET_DARWIN) || defined(TARGET_SOLARIS) || \
 	defined(TARGET_FREEBSD) || defined(TARGET_DRAGONFLY) || \
 	defined(TARGET_OPENBSD) || defined(TARGET_NETBSD)
 
@@ -2658,12 +2661,21 @@ struct rtmsg {
         ((a) > 0 ? (1 + (((a) - 1) | (sizeof(long) - 1))) : sizeof(long))
 #endif
 
+#if defined(TARGET_SOLARIS)
+#define NEXTADDR(w, u) \
+        if (rtm_addrs & (w)) {\
+            l = ROUNDUP(sizeof(struct sockaddr_in)); memmove(cp, &(u), l); cp += l;\
+        }
+
+#define ADVANCE(x, n) (x += ROUNDUP(sizeof(struct sockaddr_in)))
+#else
 #define NEXTADDR(w, u) \
         if (rtm_addrs & (w)) {\
             l = ROUNDUP(u.sa_len); memmove(cp, &(u), l); cp += l;\
         }
 
 #define ADVANCE(x, n) (x += ROUNDUP((n)->sa_len))
+#endif
 
 #define max(a,b) ((a) > (b) ? (a) : (b))
 
@@ -2700,9 +2712,12 @@ get_default_gateway (struct route_gateway_info *rgi)
   rtm.rtm_addrs = rtm_addrs; 
 
   so_dst.sa_family = AF_INET;
-  so_dst.sa_len = sizeof(struct sockaddr_in);
   so_mask.sa_family = AF_INET;
+
+#ifndef TARGET_SOLARIS
+  so_dst.sa_len = sizeof(struct sockaddr_in);
   so_mask.sa_len = sizeof(struct sockaddr_in);
+#endif
 
   NEXTADDR(RTA_DST, so_dst);
   NEXTADDR(RTA_NETMASK, so_mask);
@@ -2826,7 +2841,12 @@ get_default_gateway (struct route_gateway_info *rgi)
       for (cp = buffer; cp <= buffer + ifc.ifc_len - sizeof(struct ifreq); )
 	{
 	  ifr = (struct ifreq *)cp;
+#if defined(TARGET_SOLARIS)
+	  const size_t len = sizeof(ifr->ifr_name) + sizeof(ifr->ifr_addr);
+#else
 	  const size_t len = sizeof(ifr->ifr_name) + max(sizeof(ifr->ifr_addr), ifr->ifr_addr.sa_len);
+#endif
+
 	  if (!ifr->ifr_addr.sa_family)
 	    break;
 	  if (!strncmp(ifr->ifr_name, rgi->iface, IFNAMSIZ))

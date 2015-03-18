@@ -35,7 +35,7 @@
 
 #include "syshead.h"
 
-#if defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_POLARSSL)
+#if defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_POLARSSL)
 
 #include "ssl_verify.h"
 #include <polarssl/error.h>
@@ -115,7 +115,10 @@ backend_x509_get_username (char *cn, int cn_len,
 
   /* Found, extract CN */
   if (cn_len > name->val.len)
-    memcpy( cn, name->val.p, name->val.len );
+    {
+      memcpy( cn, name->val.p, name->val.len );
+      cn[name->val.len] = '\0';
+    }
   else
     {
       memcpy( cn, name->val.p, cn_len);
@@ -403,4 +406,4 @@ end:
   return retval;
 }
 
-#endif /* #if defined(ENABLE_SSL) && defined(ENABLE_CRYPTO_POLARSSL) */
+#endif /* #if defined(ENABLE_CRYPTO) && defined(ENABLE_CRYPTO_POLARSSL) */
